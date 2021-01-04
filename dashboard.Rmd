@@ -1,0 +1,117 @@
+---
+title: "Energia"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+runtime: shiny
+---
+
+```{r, setup, include = FALSE}
+library(shiny)
+library(xml2)
+library(magrittr)
+library(stringr)
+library(lubridate)
+library(xts)
+library(dygraphs)
+
+
+options(shiny.maxRequestSize = 10 * 1024 ^ 2)
+```
+
+Sisend {.sidebar}
+=================
+
+```{r}
+fileInput(
+  "file",
+  "Vali XML fail:",
+  accept = ".xml",
+  buttonLabel = "Sirvi...",
+  placeholder = "Fail puudub"
+)
+
+raw_data <- reactive({
+  req(input$file)
+
+  xml <- read_xml(input$file$datapath)
+
+  time_range <- xml %>%
+    xml_find_all("/EnergyReport/AccountTimeSeries/Period/TimeInterval/@v") %>%
+    xml_text() %>%
+    str_split_fixed(pattern = "/", n = 2) %>%
+    ymd_hm() %>%
+    with_tz(tzone = "Europe/Tallinn")
+  start <- min(time_range)
+  # end <- max(time_range)
+  
+  intervals <- xml %>%
+    xml_find_all("/EnergyReport/AccountTimeSeries/Period/AccountInterval")
+  Pos = xml_integer(xml_find_first(intervals, "Pos/@v"))
+  OutQty = xml_double(xml_find_first(intervals, "OutQty/@v"))
+  InQty = xml_double(xml_find_first(intervals, "InQty/@v"))
+
+  xts(cbind(OutQty, InQty), order.by = start + dhours(0:(length(Pos) - 1)))
+})
+```
+
+```{r}
+dateRangeInput(
+  "daterange",
+  label = "Vali ajavahemik:",
+  weekstart = 1,
+  language = "et",
+  separator = "kuni"
+)
+
+observe({
+  min <- min(index(raw_data()))
+  max <- max(index(raw_data()))
+
+  updateDateRangeInput(
+    session,
+    "daterange",
+    start = min,
+    end = max,
+    min = min,
+    max = max
+  )
+})
+
+dateranged_data <- reactive(
+  raw_data()[paste(input$daterange[1], input$daterange[2], sep = "/")]
+)
+```
+
+```{r}
+sums <- reactive(colSums(dateranged_data(), na.rm = TRUE))
+
+renderText({
+  req(sums())
+
+  paste("Tarbimine:", sums()["OutQty"], "kWh")
+})
+
+renderText({
+  req(sums())
+
+  paste("Müümine:", sums()["InQty"], "kWh")
+})
+```
+
+Graafik
+=======
+
+```{r}
+renderDygraph({
+  req(dateranged_data())
+
+  dygraph(data = dateranged_data(), ylab = "kWh") %>%
+    dySeries(name = "OutQty", label = "tarbimine", color = "blue") %>%
+    dySeries(name = "InQty", label = "müümine", color = "green") %>%
+    dyOptions(fillGraph = TRUE, fillAlpha = 0.1, drawGrid = FALSE) %>%
+    dyRangeSelector() %>%
+    dyCrosshair()
+})
+```
